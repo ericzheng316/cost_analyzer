@@ -23,6 +23,7 @@ __pycache__/
 /data/processed/
 /data/temp/
 *.log
+/data/raw/
 
 # OS-specific
 .DS_Store
