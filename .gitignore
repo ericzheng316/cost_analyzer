@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Anaconda & Virtual Environments
+/venv/
+/env/
+/virtual/
+.env
+
+# IDE & Editor files
+.idea/
+.vscode/
+
+# PyInstaller
+/dist/
+/build/
+*.spec
+
+# Application Data (User-specific)
+/data/processed/
+/data/temp/
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
