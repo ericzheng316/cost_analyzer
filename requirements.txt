@@ -1,0 +1,10 @@
+dash>=2.0.0
+dash-bootstrap-components
+pandas
+numpy
+plotly
+openpyxl
+pyarrow
+thefuzz
+requests
+packaging
