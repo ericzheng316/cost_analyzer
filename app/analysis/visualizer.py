@@ -20,6 +20,28 @@ def advanced_search(df: pd.DataFrame, search_criteria: dict):
             results = results[scores >= threshold]
     return results
 
+# --- 新增：独立的筛选函数 ---
+def filter_dataframe(df: pd.DataFrame, filters: dict, view_options: dict = None) -> pd.DataFrame:
+    """
+    一个独立的函数，专门负责根据筛选条件和视图选项来过滤DataFrame。
+    """
+    if df.empty:
+        return df
+
+    dff = df.copy()
+
+    # 1. 应用筛选
+    if filters:
+        dff = advanced_search(dff, filters)
+
+    # 2. 应用视图切换（剔除长描述）
+    if view_options and view_options.get('TRUNCATE'):
+        long_text_columns = ['施工内容及主要做法', '计算规则', '供应方式或分包说明']
+        cols_to_drop = [col for col in long_text_columns if col in dff.columns]
+        dff = dff.drop(columns=cols_to_drop)
+    
+    return dff
+
 # --- 绘图模块 (修正) ---
 def _plot_chart(df: pd.DataFrame, chart_type: str, x_axis: str, y_axis: str, title: str, custom_data_cols: list):
     plot_functions = {
@@ -47,14 +69,16 @@ def _plot_chart(df: pd.DataFrame, chart_type: str, x_axis: str, y_axis: str, tit
     fig = plot_func(**kwargs)
     
     # Update hovertemplate to use the valid custom data columns
-    fig.update_traces(hovertemplate="<br>".join([f"<b>{col}</b>: %{{customdata[{i}]}}" for i, col in enumerate(valid_custom_data_cols)]))
+    if valid_custom_data_cols:
+        fig.update_traces(hovertemplate="<br>".join([f"<b>{col}</b>: %{{customdata[{i}]}}" for i, col in enumerate(valid_custom_data_cols)]))
     fig.update_layout(hoverlabel=dict(align="left"))
     return fig
 
-# --- 统一数据处理与可视化引擎 (修正) ---
-def get_figure(df: pd.DataFrame, filters: dict, view_options: dict, chart_options: dict):
+# --- 统一数据处理与可视化引擎 (V2 - 已重构) ---
+def get_figure(df: pd.DataFrame, filters: dict, view_options: dict, chart_options: dict, filtered_df: pd.DataFrame = None):
     """
     接收所有UI输入，完成数据处理和可视化的完整流程。
+    新增 filtered_df 参数，如果提供，则跳过内部筛选步骤。
     """
     if df.empty: 
         return px.bar(title="无可用数据，请先导入")
@@ -68,27 +92,22 @@ def get_figure(df: pd.DataFrame, filters: dict, view_options: dict, chart_option
     if not all([chart_type, x_axis]): 
         return px.bar(title="请选择图表类型和X轴")
     if chart_type not in ['histogram'] and not y_axis:
-        # Pie charts also need a value, but we handle that implicitly
         return px.bar(title="请为该图表类型选择Y轴")
 
-    dff = df.copy()
+    # --- 核心修改：使用传入的已筛选数据或自己筛选 ---
+    if filtered_df is not None:
+        dff = filtered_df.copy()
+    else:
+        # 保持向后兼容，如果没提供filtered_df，则自己筛选
+        dff = filter_dataframe(df, filters, view_options)
+    # ------------------------------------------------
 
-    # 3. 应用筛选
-    if filters:
-        dff = advanced_search(dff, filters)
-
-    # 4. 应用视图切换（剔除长描述）
-    if view_options.get('TRUNCATE'):
-        long_text_columns = ['施工内容及主要做法', '计算规则', '供应方式或分包说明']
-        cols_to_drop = [col for col in long_text_columns if col in dff.columns]
-        dff = dff.drop(columns=cols_to_drop)
-
-    # 5. 定义标题和自定义数据
+    # 3. 定义标题和自定义数据
     title = f'{y_axis} vs. {x_axis}' if y_axis else f'Distribution of {x_axis}'
     custom_data_cols = dff.columns.tolist()
     plot_df = dff
 
-    # 6. 应用聚合逻辑
+    # 4. 应用聚合逻辑
     if view_options.get('AGGREGATE') and chart_type == 'bar' and y_axis:
         # Add original index for drill-down before grouping
         dff_agg = dff.reset_index()
@@ -102,5 +121,5 @@ def get_figure(df: pd.DataFrame, filters: dict, view_options: dict, chart_option
         custom_data_cols = ['drill_down_indices']
         title += " (均值)"
     
-    # 7. 调用绘图函数
+    # 5. 调用绘图函数
     return _plot_chart(plot_df, chart_type, x_axis, y_axis, title, custom_data_cols)

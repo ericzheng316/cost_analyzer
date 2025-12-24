@@ -7,16 +7,7 @@
 3. 拆分成多个小回调，每个只做一件事
 4. 使用ComponentIDs常量避免魔法字符串
 5. 统一错误处理
-
-架构对比：
-    重构前：9个State → 1个巨大回调 → 直接更新图表
-    重构后：多个Input → 更新Store → 监听Store → 更新图表
-
-优势：
-- 添加新筛选器只需修改Store结构，无需修改回调签名
-- 每个回调职责单一，易于理解和测试
-- 状态可持久化（session存储）
-- 支持撤销/重做等高级功能
+6. 新增：展示筛选后的数据统计和明细表格
 """
 
 import dash
@@ -30,7 +21,8 @@ from app.state_manager import StateManager
 from app.utils.error_handler import ErrorHandler
 
 # 导入统一的可视化引擎（保持不变）
-from app.analysis.visualizer import get_figure
+# --- 关键修改：导入 filter_dataframe ---
+from app.analysis.visualizer import get_figure, filter_dataframe
 
 
 # ===========================================
@@ -56,51 +48,53 @@ def create_visualizer_layout(df):
     all_columns = df.columns.tolist()
     numeric_columns = df.select_dtypes(include=np.number).columns.tolist()
 
-    # 动态生成筛选器（使用create_filter_id辅助函数）
+    # --- V3 升级：动态生成筛选器 ---
     filters = []
     for col in all_columns:
-        if col == '项目名称':
-            # 文本输入筛选器（模糊搜索）
-            filters.append(
-                html.Div([
-                    html.Label(f'{col} (模糊搜索)', className="form-label"),
-                    dcc.Input(
-                        id=create_filter_id(col, 'input'),  # 使用辅助函数创建ID
-                        type='text',
-                        className="form-control"
+        if df[col].dtype == 'object' or isinstance(df[col].dtype, pd.StringDtype):
+            unique_values = df[col].unique()
+            # 即使只有一个选项，也应该显示筛选器
+            if 0 < len(unique_values) < 50:
+                options = [{'label': str(i), 'value': i} for i in unique_values if i and pd.notna(i)]
+                if not options: continue
+                filters.append(
+                    html.Div([
+                        html.Label(col, className="form-label"),
+                        dcc.Dropdown(
+                            id=create_filter_id(col, 'dropdown'),
+                            options=options,
+                            className="form-select"
+                        )
+                    ], className="mb-3")
+                )
+            else:
+                if '名称' in col:
+                     filters.append(
+                        html.Div([
+                            html.Label(f'{col} (模糊搜索)', className="form-label"),
+                            dcc.Input(
+                                id=create_filter_id(col, 'input'),
+                                type='text',
+                                className="form-control"
+                            )
+                        ], className="mb-3")
                     )
-                ], className="mb-3")
-            )
-        elif df[col].dtype == 'object' and 1 < df[col].nunique() < 50:
-            # 下拉筛选器
-            options = [{'label': str(i), 'value': i} for i in df[col].unique() if i]
-            filters.append(
-                html.Div([
-                    html.Label(col, className="form-label"),
-                    dcc.Dropdown(
-                        id=create_filter_id(col, 'dropdown'),  # 使用辅助函数
-                        options=options,
-                        className="form-select"
-                    )
-                ], className="mb-3")
-            )
+    # --- 结束 V3 升级 ---
 
-    # 视图选项
     view_switcher = dcc.Checklist(
-        id=ComponentIDs.Visualizer.VIEW_SWITCHER,  # 使用常量
+        id=ComponentIDs.Visualizer.VIEW_SWITCHER,
         options=[{'label': '剔除长描述列', 'value': 'TRUNCATE'}],
         value=[],
         className="form-check"
     )
 
     agg_switcher = dcc.Checklist(
-        id=ComponentIDs.Visualizer.AGGREGATION_CHECKER,  # 使用常量
+        id=ComponentIDs.Visualizer.AGGREGATION_CHECKER,
         options=[{'label': '合并同类项(仅条形图)', 'value': 'AGGREGATE'}],
         value=[],
         className="form-check"
     )
 
-    # 完整布局
     return html.Div([
         html.Div([
             # 左侧筛选面板
@@ -113,18 +107,18 @@ def create_visualizer_layout(df):
                 html.Hr(),
                 html.Button(
                     '应用并更新图表',
-                    id=ComponentIDs.Visualizer.APPLY_FILTERS_BTN,  # 使用常量
+                    id=ComponentIDs.Visualizer.APPLY_FILTERS_BTN,
                     className="btn btn-primary w-100",
                     style={'marginTop': '15px'}
                 )
-            ], style={'width': '25%', 'padding': '10px'}),
+            ], style={'width': '25%', 'padding': '10px', 'maxHeight': '90vh', 'overflowY': 'auto'}),
 
             # 右侧图表工作室
             html.Div([
                 html.H3('图表工作室', className="mb-3"),
                 html.Div([
                     dcc.Dropdown(
-                        id=ComponentIDs.Visualizer.CHART_TYPE_DROPDOWN,  # 使用常量
+                        id=ComponentIDs.Visualizer.CHART_TYPE_DROPDOWN,
                         options=[
                             {'label': '条形图', 'value': 'bar'},
                             {'label': '饼图', 'value': 'pie'},
@@ -137,22 +131,40 @@ def create_visualizer_layout(df):
                         className="mb-2"
                     ),
                     dcc.Dropdown(
-                        id=ComponentIDs.Visualizer.X_AXIS_DROPDOWN,  # 使用常量
+                        id=ComponentIDs.Visualizer.X_AXIS_DROPDOWN,
                         options=[{'label': i, 'value': i} for i in all_columns],
                         placeholder="选择X轴",
                         className="mb-2"
                     ),
                     dcc.Dropdown(
-                        id=ComponentIDs.Visualizer.Y_AXIS_DROPDOWN,  # 使用常量
+                        id=ComponentIDs.Visualizer.Y_AXIS_DROPDOWN,
                         options=[{'label': i, 'value': i} for i in numeric_columns],
                         placeholder="选择Y轴",
                         className="mb-2"
                     ),
                 ]),
                 dcc.Graph(
-                    id=ComponentIDs.Visualizer.MAIN_GRAPH,  # 使用常量
-                    style={'height': '80vh'}
-                )
+                    id=ComponentIDs.Visualizer.MAIN_GRAPH,
+                    style={'height': '60vh'} # 稍微减小图表高度，为表格留出空间
+                ),
+                
+                # --- 新增：数据统计和明细表格 ---
+                html.Hr(),
+                html.Div([
+                    html.H4("筛选数据明细", className="mb-3"),
+                    html.Div(id="filtered-data-stats", className="alert alert-info"), # 统计信息
+                    dash_table.DataTable(
+                        id="filtered-data-table",
+                        columns=[{"name": i, "id": i} for i in df.columns],
+                        data=[], # 初始为空，由回调填充
+                        page_size=10,
+                        style_table={'overflowX': 'auto'},
+                        style_cell={'textAlign': 'left', 'minWidth': '100px'},
+                        style_header={'fontWeight': 'bold', 'backgroundColor': '#f8f9fa'}
+                    )
+                ], className="mt-4")
+                # --- 结束新增 ---
+                
             ], style={'width': '75%', 'padding': '10px'})
         ], style={'display': 'flex'})
     ])
@@ -165,16 +177,6 @@ def create_visualizer_layout(df):
 def register_visualizer_callbacks(app, controller):
     """
     注册所有与可视化相关的回调
-
-    重构策略：
-    1. 回调A: 收集筛选器值 → 更新FILTER_STATE Store
-    2. 回调B: 收集图表配置 → 更新CHART_CONFIG Store
-    3. 回调C: 监听两个Store → 渲染图表
-
-    这样做的好处：
-    - 添加新筛选器只需修改回调A的逻辑，无需修改签名
-    - 每个回调职责单一
-    - Store可以被多个回调监听
     """
 
     # ---------------------------------------
@@ -191,34 +193,17 @@ def register_visualizer_callbacks(app, controller):
     )
     @ErrorHandler.handle_callback_error("筛选器更新", show_traceback=True)
     def update_filter_store(n_clicks, input_values, dropdown_values, input_ids, dropdown_ids):
-        """
-        只负责收集所有筛选器的值并打包成字典，存入Store
-
-        职责：
-        - 收集文本输入筛选器的值
-        - 收集下拉筛选器的值
-        - 打包成统一格式：{'列名': {'value': xx, 'method': 'fuzzy/exact'}}
-        - 存入FILTER_STATE Store
-
-        不做任何数据处理或图表渲染！
-        """
         filters = {}
-
-        # 处理文本输入筛选器（模糊搜索）
         if input_values:
             for i, val in enumerate(input_values):
-                if val:  # 忽略空值
+                if val:
                     col_name = input_ids[i]['index']
                     filters[col_name] = {'value': val, 'method': 'fuzzy'}
-
-        # 处理下拉筛选器（精确匹配）
         if dropdown_values:
             for i, val in enumerate(dropdown_values):
-                if val:  # 忽略空值
+                if val:
                     col_name = dropdown_ids[i]['index']
                     filters[col_name] = {'value': val, 'method': 'exact'}
-
-        # 使用StateManager创建标准格式的Store数据
         return StateManager.create_filter_state(filters=filters)
 
     # ---------------------------------------
@@ -235,22 +220,10 @@ def register_visualizer_callbacks(app, controller):
     )
     @ErrorHandler.handle_callback_error("图表配置更新", show_traceback=True)
     def update_chart_config(chart_type, x_axis, y_axis, view_opts, agg_opts):
-        """
-        收集图表配置并存入Store
-
-        职责：
-        - 收集图表类型、轴选择、视图选项
-        - 打包成标准格式
-        - 存入CHART_CONFIG Store
-
-        不做任何图表渲染！
-        """
         view_options = {
             'TRUNCATE': 'TRUNCATE' in (view_opts or []),
             'AGGREGATE': 'AGGREGATE' in (agg_opts or [])
         }
-
-        # 使用StateManager创建标准格式
         return StateManager.create_chart_config(
             chart_type=chart_type or 'bar',
             x_axis=x_axis,
@@ -259,36 +232,27 @@ def register_visualizer_callbacks(app, controller):
         )
 
     # ---------------------------------------
-    # 回调C: 监听Store → 渲染图表
+    # 回调C: 监听Store → 渲染图表和表格 (已修复)
     # ---------------------------------------
     @app.callback(
-        Output(ComponentIDs.Visualizer.MAIN_GRAPH, 'figure'),
-        [Input(ComponentIDs.Store.FILTER_STATE, 'data'),      # 监听筛选器Store
-         Input(ComponentIDs.Store.CHART_CONFIG, 'data')],     # 监听图表配置Store
+        [Output(ComponentIDs.Visualizer.MAIN_GRAPH, 'figure'),
+         Output("filtered-data-stats", "children"),  # 新增Output
+         Output("filtered-data-table", "data")],     # 新增Output
+        [Input(ComponentIDs.Store.FILTER_STATE, 'data'),
+         Input(ComponentIDs.Store.CHART_CONFIG, 'data')],
         prevent_initial_call=True
     )
-    @ErrorHandler.safe_callback(default_return={'layout': {'title': '图表渲染失败'}})
-    def render_chart(filter_state, chart_config):
+    @ErrorHandler.safe_callback(default_return=({'layout': {'title': '图表渲染失败'}}, "无数据", []))
+    def render_chart_and_table(filter_state, chart_config):
         """
-        纯渲染函数：从Store读取配置 → 生成图表
-
-        职责：
-        - 从FILTER_STATE Store读取筛选器配置
-        - 从CHART_CONFIG Store读取图表配置
-        - 从controller获取数据
-        - 调用get_figure生成图表
-
-        优势：
-        - 只有2个参数！（vs 原来的9个）
-        - 参数是Store数据，结构清晰
-        - 添加新筛选器无需修改这个函数
+        更新图表、统计信息和数据表格
         """
         # 获取数据
         df = controller.data
         if df is None or df.empty:
-            return {'layout': {'title': '无可用数据，请先导入'}}
+            return {'layout': {'title': '无可用数据，请先导入'}}, "无可用数据", []
 
-        # 从Store读取配置（而不是从9个参数！）
+        # 从Store读取配置
         filters = filter_state.get('filters', {}) if filter_state else {}
 
         if chart_config:
@@ -297,37 +261,24 @@ def register_visualizer_callbacks(app, controller):
             x_axis = chart_config.get('x_axis')
             y_axis = chart_config.get('y_axis')
         else:
-            # 默认值
             view_options = {'TRUNCATE': False, 'AGGREGATE': False}
             chart_type = 'bar'
             x_axis = None
             y_axis = None
 
-        # 打包图表选项
-        chart_options = {
-            'type': chart_type,
-            'x': x_axis,
-            'y': y_axis
-        }
+        # --- 核心修复：先调用 filter_dataframe 获取筛选后的数据 ---
+        # 1. 筛选数据
+        dff = filter_dataframe(df, filters, view_options)
+        
+        # 2. 生成统计信息
+        row_count = len(dff)
+        stats_text = f"当前筛选条件下共有 {row_count} 行数据。"
 
-        # 调用核心可视化引擎（保持不变）
-        return get_figure(df, filters, view_options, chart_options)
+        # 3. 生成表格数据 (只展示前1000行以保证性能)
+        table_data = dff.head(1000).to_dict('records')
 
+        # 4. 生成图表 (传入 filtered_df=dff，避免重复筛选)
+        chart_options = {'type': chart_type, 'x': x_axis, 'y': y_axis}
+        fig = get_figure(df, filters, view_options, chart_options, filtered_df=dff)
 
-# ===========================================
-# 向后兼容性说明
-# ===========================================
-"""
-这个重构版本保持了对外接口的兼容性：
-1. create_visualizer_layout(df) - 签名不变
-2. register_visualizer_callbacks(app, controller) - 签名不变
-3. 使用相同的get_figure引擎
-
-因此可以直接替换旧版本，无需修改其他模块。
-
-如何切换：
-1. 备份原文件：tab_visualizer.py → tab_visualizer_old.py
-2. 重命名新文件：tab_visualizer_refactored.py → tab_visualizer.py
-3. 在app.py中添加Store组件（见下一步）
-4. 重启应用，测试功能
-"""
+        return fig, stats_text, table_data
